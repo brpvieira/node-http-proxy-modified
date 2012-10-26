@@ -25,52 +25,131 @@
 */
 
 var util = require('util'),
-    colors = require('colors'),
-    http = require('http'),
-    httpProxy = require('../../lib/node-http-proxy');
+  colors = require('colors'),
+  http = require('http'),
+  url = require('url'),
+  httpProxy = require('../../lib/node-http-proxy');
 
-// Setup a hostname based Routing proxy that emulates the behavior of 
+
+var proxyPort = 80,
+  backendPort = 8000;
+
+//
+// Create target backend servers
+//
+
+var wrapInHtml = function (body) {
+  return [
+    '<html>',
+    '<head></head>',
+    '<body>',
+    '\t' + body,
+    '</body>',
+    '</html>'
+  ].join('\n');
+};
+
+http.createServer(function (req, res) {
+  var reqInfo = {
+    method: req.method,
+    url: url.parse(req.url),
+    headers: req.headers
+  };
+
+  util.puts(req.headers.host.green.bold.underline +
+    ' received proxied request from '.blue +
+    req.headers['x-forwarded-host'].yellow.underline  +
+    ' with url '.blue +
+    req.url.yellow
+  );
+
+  //
+  // Emulate name based virtual hosting
+  //
+  if(!req.headers.host.match(/^backend[12]:8000$/i)) {
+    util.puts(req.headers.host.red.bold.underline +
+      ' cannot be handled by backend server, bailing out with `500`'.red.bold
+    );
+    res.writeHead(500,{'Content-type' : 'text/plain'});
+    res.end('Internal server error');
+    return;
+  }
+
+   var getRedirectUrl = function (testUrl) {
+    var match = testUrl.match(/^\/redirect\?p\=(.+)$/i);
+    return match && match[1] ? match[1] : false;
+  }
+
+  var redirectMatch = getRedirectUrl(req.url);
+
+  if (redirectMatch) {
+    var redirectTo;
+    if(/^\/.*/.test(redirectMatch) || /^http[s]?:\/\/(.+)$/.test(redirectMatch)) {
+      redirectTo = redirectMatch;
+    } else {
+      var parts = req.url.split('/');
+      parts.pop();
+      parts.push(redirectMatch)
+      redirectTo = parts.join('/');
+    }
+
+    util.puts(req.headers.host.green.bold.underline +
+      ' redirecting request from '.blue +
+      'http://'.yellow.underline +
+      req.headers.host.yellow.underline  +
+      req.url.yellow.underline +
+      ' to '.blue +
+      redirectTo.green.underline
+    );
+    res.writeHead(301,{'Location' : redirectTo});
+    res.end();
+    return;
+  }
+
+
+  res.writeHead(200,{'Content-type': 'text/html'});
+  var content = wrapInHtml('<pre>' + util.inspect(reqInfo) + '</pre>');
+  res.write(content);
+  res.end();
+
+}).listen(backendPort);
+
+// Setup a hostname based Routing proxy that emulates the behavior of
 // Apache's mod_proxy ProxyPass and ProxyPass reverse
 var proxyOptions  = {
-  // Set proxied host header to target hostname.
-  // This is needed in order to allow NameVirtualHosts on 
-  // the backend server
-  changeOrigin: true,
-  // This crude implemetation of rewriteRedirects isn't able to handle
-  // source routes with paths, for now only root on the source can be 
+    // Toggle Apache's mod_proxy emulation
+  emulateModProxy: true,
+  // This crude implemetation of mod proxy emulation isn't able to handle
+  // source routes with paths, for now only root on the source can be
   // matched to the root path on the target
   hostnameOnly: true,
-  // Enable rewriting of Location, Content-Location and URI fields on  
-  // the target's response headers
-  rewriteRedirects: false,
   router: {
-    'foo.example.com' : 'backend1:80',
-    'bar.example.com' : 'backend2:80'
+    'foo.example.com' : 'backend1:8000',
+    'bar.example.com' : 'backend2:8000'
   }
 };
 
 var proxy = new httpProxy.RoutingProxy(proxyOptions);
 
 http.createServer(function (req, res) {
-  var buffer = httpProxy.buffer(req);
-  
+  util.puts(req.headers.host.green.bold.underline + ' received request with url '.blue + req.url.yellow);
+
   var source = req.headers.host.split(":");
   if(source.length == 1) {
     source.push(80);
   }
 
-  proxy.proxyRequest(req, res, {
-    buffer: buffer,
-    source: {
-      host: source[0],
-      port: source[1]
-    }
-  });
-}).listen(8004);
+  proxy.proxyRequest(req, res);
+}).listen(proxyPort);
 
-// Listen on the start event on the proxy to add mod_proxy
-// compliant headers
-proxy.on('start',function(req, res, target) {
-  req.headers['X-Forwarded-Host'] = req.headers.host;
-  req.headers['X-Forwarded-Server'] = req.headers.host.split(':')[0];
+//
+// Catch requests not matched by RoutingProxy.proxyTable
+//
+proxy.on('routenotfound', function(req, res) {
+  util.puts('Unable to find matching route for '.red.bold + req.headers.host.yellow.underline + req.url.yellow.underline + ' bailing out with `404`.'.red.bold);
+  proxy.tryEndResponseWithNotFound(res);
 });
+
+
+util.puts('Routing proxy server'.blue + ' started '.green.bold + 'on port '.blue + proxyPort.toString().yellow);
+util.puts('http server '.blue + 'started '.green.bold + 'on port '.blue + backendPort.toString().yellow);
