@@ -9,7 +9,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "http://github.com/brpvieira/node-http-proxy.git"
+    "url": "http://github.com/brpvieira/node-http-proxy-modified.git"
   },
   "keywords": [
     "reverse",
